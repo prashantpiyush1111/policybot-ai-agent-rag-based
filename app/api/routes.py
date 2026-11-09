@@ -2,8 +2,9 @@
 FastAPI routes for the AI Agent API.
 """
 
-from fastapi import APIRouter, HTTPException, status
-from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 import logging
 
 from app.models.schemas import (
@@ -17,10 +18,13 @@ from app.models.schemas import (
 )
 from app.agents.agent import agent
 from app.config import settings
+from app.api.security import verify_api_key
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+limiter = Limiter(key_func=get_remote_address, enabled=settings.rate_limit_enabled)
+router = APIRouter(dependencies=[Depends(verify_api_key)])
+public_router = APIRouter()
 
 
 @router.post(
@@ -34,7 +38,8 @@ router = APIRouter()
         500: {"model": ErrorResponse}
     }
 )
-async def ask_question(request: AskRequest) -> AskResponse:
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
+async def ask_question(request: Request, body: AskRequest) -> AskResponse:
     """
     Main endpoint for asking questions to the AI agent.
     
@@ -44,12 +49,12 @@ async def ask_question(request: AskRequest) -> AskResponse:
     3. Maintain conversation context if session_id is provided
     """
     try:
-        logger.info(f"Received query: {request.query[:100]}")
+        logger.info(f"Received query: {body.query[:100]}")
         
         # Process query with agent
         response = await agent.process_query(
-            query=request.query,
-            session_id=request.session_id
+            query=body.query,
+            session_id=body.session_id
         )
         
         return AskResponse(
@@ -73,12 +78,13 @@ async def ask_question(request: AskRequest) -> AskResponse:
     summary="Ask a question with detailed response",
     description="Get a detailed response including processing time and method used"
 )
-async def ask_question_detailed(request: AskRequest) -> DetailedAskResponse:
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
+async def ask_question_detailed(request: Request, body: AskRequest) -> DetailedAskResponse:
     """Get detailed response with more metadata."""
     try:
         response = await agent.process_query(
-            query=request.query,
-            session_id=request.session_id
+            query=body.query,
+            session_id=body.session_id
         )
         
         metadata = response.get("metadata", {})
@@ -109,7 +115,7 @@ async def ask_question_detailed(request: AskRequest) -> DetailedAskResponse:
         )
 
 
-@router.get(
+@public_router.get(
     "/health",
     response_model=HealthResponse,
     summary="Health check",
@@ -125,7 +131,7 @@ async def health_check() -> HealthResponse:
     )
 
 
-@router.get(
+@public_router.get(
     "/ready",
     summary="Readiness check",
     description="Check if API is ready to serve requests (for Kubernetes)"
@@ -150,7 +156,8 @@ async def readiness_check():
     summary="Get session info",
     description="Get information about a conversation session"
 )
-async def get_session(session_id: str) -> SessionInfo:
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
+async def get_session(request: Request, session_id: str) -> SessionInfo:
     """Get session information."""
     session_info = await agent.get_session_info(session_id)
     
@@ -168,6 +175,7 @@ async def get_session(session_id: str) -> SessionInfo:
     summary="Get agent statistics",
     description="Get statistics about the agent and memory usage"
 )
-async def get_stats():
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
+async def get_stats(request: Request):
     """Get agent statistics."""
     return agent.get_stats()
